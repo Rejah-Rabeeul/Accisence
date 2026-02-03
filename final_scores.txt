@@ -1,0 +1,5 @@
+Overall Accuracy: 46.44%
+F1 Score: 0.4752
+Recall (Accident Detection): 99.00%
+Precision (Accident Alert): 31.27%
+Top-5 Precision: 100.00%
