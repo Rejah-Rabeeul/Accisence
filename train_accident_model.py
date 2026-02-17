@@ -1,8 +1,8 @@
 import pandas as pd
 import xgboost as xgb
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, f1_score
 import joblib
 import numpy as np
 
@@ -30,8 +30,11 @@ def train_model():
     
     print("Weather mapping:", dict(zip(le_weather.classes_, le_weather.transform(le_weather.classes_))))
     
+    # --- Feature Engineering ---
+    # Interaction: Night * Weather (Weather is 0,1,2 so it works as an interaction ordinal)
+    df['night_weather'] = df['is_night'] * df['weather_encoded']
+    
     # Feature Selection
-    # X features: curvature_score, maxspeed, is_junction, is_night, weather_encoded, hour_of_day, is_holiday
     features = [
         'curvature_score', 
         'maxspeed', 
@@ -39,7 +42,8 @@ def train_model():
         'is_night', 
         'weather_encoded', 
         'hour_of_day', 
-        'is_holiday'
+        'is_holiday',
+        'night_weather' # New Interaction
     ]
     
     X = df[features]
@@ -54,26 +58,50 @@ def train_model():
         X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y
     )
 
-    # 3. Model Initialization
-    # scale_pos_weight=10 to handle 1:10 imbalance
-    print("Initializing XGBoost Classifier...")
-    model = xgb.XGBClassifier(
-        n_estimators=100,
-        max_depth=6,
-        learning_rate=0.1,
-        scale_pos_weight=10,
+    # 3. Model Initialization & Tuning
+    print("Initializing Tuning (RandomizedSearchCV)...")
+    
+    xgb_pipeline = xgb.XGBClassifier(
         use_label_encoder=False,
         eval_metric='logloss',
         random_state=RANDOM_STATE,
-        n_jobs=-1  # Use all cores
+        n_jobs=4 # Parallel tree building
+    )
+    
+    # Param Grid
+    # Focused on Accuracy AND Recall (Balanced Dataset)
+    param_dist = {
+        'n_estimators': [100, 200, 300],
+        'max_depth': [6, 8, 10, 12],
+        'learning_rate': [0.05, 0.1, 0.2],
+        'scale_pos_weight': [1], # Standard balanced training
+        'subsample': [0.8, 1.0],
+        'colsample_bytree': [0.8, 1.0]
+    }
+    
+    search = RandomizedSearchCV(
+        estimator=xgb_pipeline,
+        param_distributions=param_dist,
+        n_iter=15, # Increased for better tuning
+        scoring='accuracy', # Optimize for Accuracy directly
+        cv=3,
+        verbose=1,
+        random_state=RANDOM_STATE,
+        n_jobs=1, # Sequential loop over params
+        error_score='raise'
     )
 
     # 4. Training
-    print("Training model (this may take a while)...")
-    model.fit(X_train, y_train)
+    print("Tuning model (this may take a while)...")
+    search.fit(X_train, y_train)
+    
+    print(f"Best Params: {search.best_params_}")
+    print(f"Best F1 Score: {search.best_score_:.4f}")
+    
+    model = search.best_estimator_
 
     # 5. Evaluation
-    print("Evaluating model...")
+    print("Evaluating best model...")
     y_pred = model.predict(X_test)
     
     print("\n--- Classification Report ---")
@@ -83,20 +111,31 @@ def train_model():
     cm = confusion_matrix(y_test, y_pred)
     print(cm)
     
-    # Calculate specificity and sensitivity manually for clarity
+    # Metrics
     tn, fp, fn, tp = cm.ravel()
-    sensitivity = tp / (tp + fn) # Recall for class 1
-    specificity = tn / (tn + fp) # Recall for class 0
+    sensitivity = tp / (tp + fn) # Recall
     precision = tp / (tp + fp)
+    accuracy = accuracy_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
     
-    print(f"\nRecall (Accident Detection): {sensitivity:.4f}")
+    print(f"\nOverall Accuracy: {accuracy:.2%}")
+    print(f"F1 Score: {f1:.4f}")
+    print(f"Recall (Accident Detection): {sensitivity:.4f}")
     print(f"Precision (Accident correct): {precision:.4f}")
+    
+    # Save Metrics
+    with open("final_scores.txt", "w") as f:
+        f.write(f"Overall Accuracy: {accuracy:.2%}\n")
+        f.write(f"F1 Score: {f1:.4f}\n")
+        f.write(f"Recall (Accident Detection): {sensitivity:.2%}\n")
+        f.write(f"Precision (Accident Alert): {precision:.2%}\n")
+        f.write(f"Best Params: {search.best_params_}\n")
     
     # 6. Export
     print(f"Saving model to {MODEL_FILE}...")
     joblib.dump(model, MODEL_FILE)
     
-    # Also save the label encoder to handle future inference correctly
+    # Also save the label encoder
     joblib.dump(le_weather, "weather_encoder.pkl")
     print("Training pipeline complete.")
 

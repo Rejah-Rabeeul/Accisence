@@ -20,7 +20,8 @@ MODEL_FEATURES = [
     'is_night', 
     'weather_encoded', 
     'hour_of_day', 
-    'is_holiday'
+    'is_holiday',
+    'night_weather'  # New Interaction Feature
 ]
 
 def load_weather_encoder():
@@ -126,7 +127,8 @@ def prepare_live_features(road_feature_dict, weather_str, time_data):
         'is_night': time_data['is_night'],
         'weather_encoded': weather_encoded,
         'hour_of_day': time_data['hour_of_day'],
-        'is_holiday': time_data['is_holiday']
+        'is_holiday': time_data['is_holiday'],
+        'night_weather': time_data['is_night'] * weather_encoded # New Interaction
     }
     
     # Create DataFrame with exact column ordering

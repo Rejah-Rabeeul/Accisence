@@ -110,7 +110,7 @@ def main():
     orig_lat, orig_lon = orig_coords
     dest_lat, dest_lon = dest_coords
 
-def analyze_route(origin_input, dest_input, model=None, G=None):
+def analyze_route(origin_input, dest_input, model=None, G=None, user_location=None):
     """
     Analyzes the route between origin and destination.
     Returns a dictionary with route details, risks, and map link, or None if failed.
@@ -122,14 +122,24 @@ def analyze_route(origin_input, dest_input, model=None, G=None):
             return {"error": "Model not found."}
 
     # 1. Resolve Coordinates
-    orig_coords = get_coordinates(origin_input)
-    dest_coords = get_coordinates(dest_input)
-    
-    if not orig_coords or not dest_coords:
-        return {"error": "Could not resolve locations."}
+    if not origin_input and user_location:
+         # Use provided browser coordinates directly
+         orig_lat, orig_lon = user_location
+         # Use destination resolution as usual
+         dest_coords = get_coordinates(dest_input)
+         if not dest_coords:
+             return {"error": "Could not resolve destination."}
+         dest_lat, dest_lon = dest_coords
+    else:
+        # Standard Resolution
+        orig_coords = get_coordinates(origin_input)
+        dest_coords = get_coordinates(dest_input)
         
-    orig_lat, orig_lon = orig_coords
-    dest_lat, dest_lon = dest_coords
+        if not orig_coords or not dest_coords:
+            return {"error": "Could not resolve locations."}
+            
+        orig_lat, orig_lon = orig_coords
+        dest_lat, dest_lon = dest_coords
 
     # 2. Get Graph
     if G is None:
@@ -207,7 +217,9 @@ def analyze_route(origin_input, dest_input, model=None, G=None):
     top_5.sort(key=lambda x: x['order'])
     
     # URL Construction
-    url_origin = "Current+Location" if not origin_input else f"{orig_lat},{orig_lon}"
+    # URL Construction
+    # Use resolved coordinates for Origin to match analysis exactly
+    url_origin = f"{orig_lat},{orig_lon}"
     url_dest = f"{dest_lat},{dest_lon}"
     waypoints = [f"{risk['lat']},{risk['lon']}" for risk in top_5]
     wp_str = "|".join(waypoints)
@@ -222,6 +234,24 @@ def analyze_route(origin_input, dest_input, model=None, G=None):
         "time_ctx": time_ctx,
         "G": G  # Return graph in case it was created here
     }
+
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """
+    Calculates the great-circle distance between two points on the Earth surface.
+    Returns distance in meters.
+    """
+    import math
+    R = 6371000  # Earth radius in meters
+    
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    
+    a = math.sin(delta_phi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    
+    return R * c
 
 def main():
     print("1. Loading Real-Time Nervous System...")

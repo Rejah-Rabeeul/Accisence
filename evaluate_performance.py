@@ -28,6 +28,9 @@ def evaluate():
     le_weather = LabelEncoder()
     df['weather_encoded'] = le_weather.fit_transform(df['weather'])
     
+    # Interaction: Night * Weather (Must match training logic)
+    df['night_weather'] = df['is_night'] * df['weather_encoded']
+    
     features = [
         'curvature_score', 
         'maxspeed', 
@@ -35,7 +38,8 @@ def evaluate():
         'is_night', 
         'weather_encoded', 
         'hour_of_day', 
-        'is_holiday'
+        'is_holiday',
+        'night_weather' # Added interaction
     ]
     
     X = df[features]

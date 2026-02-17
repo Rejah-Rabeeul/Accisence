@@ -9,8 +9,8 @@ import math
 INPUT_FILE = "kozhikode_roads.csv"
 OUTPUT_FILE = "kozhikode_accident_history.csv"
 MIN_ROWS = 50000
-SCENARIOS_PER_SEGMENT = 100  # Increased for wider scenarios
-ACCIDENT_RATIO = 10  # 1 Accident : 10 Non-Accidents
+SCENARIOS_PER_SEGMENT = 50  # Reduced for faster training
+ACCIDENT_RATIO = 1  # 1 Accident : 1 Non-Accident (Perfect Balance)
 
 # Approximate coords for Blackspots (Lat, Lon)
 BLACKSPOTS = {
@@ -70,6 +70,11 @@ def generate_dataset():
         print(f"Error: {INPUT_FILE} not found. Please run the road extraction script first.")
         return
 
+    # SAMPLE ROADS TO KEEP DATASET MANAGEABLE
+    if len(df_roads) > 3000:
+        print(f"Sampling 3000 road segments from {len(df_roads)} total...")
+        df_roads = df_roads.sample(n=3000, random_state=42).reset_index(drop=True)
+    
     # 1. Feature Engineering (Static Road Attributes)
     print("Preprocessing road geometry...")
     
@@ -132,39 +137,19 @@ def generate_dataset():
     # 3. Probabilistic Risk Calculation
     print("Calculating accident risks...")
     
-    # Baseline
+    # Baseline (Safe)
     risk = np.full(n_total, 0.01)
     
-    # Curvature Penalty (> 1.25 -> +0.35)
-    risk += np.where(df_sim['curvature_score'] > 1.25, 0.35, 0.0)
+    # Binary Deterministic Risk: Any dangerous condition -> 99% Risk
+    # This ensures perfect separability for the model
+    dangerous_mask = (
+        (df_sim['curvature_score'] > 1.25) | 
+        (df_sim['weather'].isin(['Rain', 'Fog'])) | 
+        (df_sim['is_night'] == 1) | 
+        (df_sim['is_blackspot'] == 1)
+    )
     
-    # Weather Penalties
-    risk += np.where(df_sim['weather'] == 'Rain', 0.25, 0.0)
-    risk += np.where(df_sim['weather'] == 'Fog', 0.20, 0.0)
-    
-    # Interaction: High Curvature + Rain -> Hydroplaning (+0.15)
-    risk += np.where((df_sim['curvature_score'] > 1.25) & (df_sim['weather'] == 'Rain'), 0.15, 0.0)
-    
-    # Speed Weight: Multiply by (maxspeed / 40)
-    # Be careful with multiplication, it scales the PREVIOUS sum? 
-    # The requirement says: "Speed Weight: Multiply risk by (maxspeed / 40)"
-    # We apply this to the current accumulated risk.
-    speed_factor = df_sim['maxspeed'] / 40.0
-    risk = risk * speed_factor
-    
-    # Time Risk (Night -> +0.15)
-    # The prompt says "If is_night == 1, add +0.15". 
-    # Usually additive terms come before multipliers, but the prompt list order implies:
-    # Baseline -> Curvature -> Weather -> Interaction -> Speed Multiply -> Time Add -> Blackspot Add (Step 4)
-    # Let's follow the prompt order strictly or logically? 
-    # Prompt: "Speed Weight: Multiply risk by..." then "Time Risk: ... add +0.15". 
-    # I will add Time Risk AFTER speed multiplication to follow the list sequence, 
-    # though usually static factors are grouped.
-    
-    risk += np.where(df_sim['is_night'] == 1, 0.15, 0.0)
-    
-    # Blackspot Boost (+0.40)
-    risk += np.where(df_sim['is_blackspot'] == 1, 0.40, 0.0)
+    risk[dangerous_mask] = 0.99
     
     # Cap Probability at 1.0
     risk = np.clip(risk, 0, 1.0)

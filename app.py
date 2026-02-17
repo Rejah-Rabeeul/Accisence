@@ -7,8 +7,9 @@ import joblib
 import os
 import networkx as nx
 import osmnx as ox
+from streamlit_js_eval import get_geolocation
 from realtime_inference_utils import get_live_weather, get_temporal_features, prepare_live_features
-from risk_aware_navigation import analyze_route, get_coordinates, calculate_curvature, get_maxspeed
+from risk_aware_navigation import analyze_route, get_coordinates, calculate_curvature, get_maxspeed, haversine_distance
 
 # --- Configuration ---
 st.set_page_config(
@@ -71,6 +72,12 @@ def main():
     with st.spinner("Loading AI Nervous System..."):
         model = load_model()
         G = load_graph()
+        
+    # Get User Location (Browser)
+    loc = get_geolocation()
+    user_coords = None
+    if loc and 'coords' in loc:
+        user_coords = (loc['coords']['latitude'], loc['coords']['longitude'])
 
     if not model:
         st.error(f"Critical Error: Model file '{MODEL_PATH}' not found. Please train the model first.")
@@ -82,6 +89,12 @@ def main():
     # --- Sidebar: Environment Status ---
     st.sidebar.title("🌍 Live Environment")
     
+    # GPS Status
+    if user_coords:
+        st.sidebar.success(f"📡 GPS: Connected\n({user_coords[0]:.3f}, {user_coords[1]:.3f})")
+    else:
+        st.sidebar.warning("📡 GPS: Not Detected\n(Using IP Location)")
+
     # Use cached weather to prevent blocking/blinking
     weather = get_cached_weather()
     time_ctx = get_temporal_features()
@@ -97,13 +110,21 @@ def main():
     
     st.sidebar.markdown("---")
     st.sidebar.info("System connected to Kozhikode Traffic Grid.")
+    
+    if st.sidebar.button("🔄 Reload Model"):
+        st.cache_resource.clear()
+        st.success("Model Cache Cleared! Reloading...")
+        st.rerun()
 
     # --- Tabs ---
-    tab1, tab2, tab3 = st.tabs(["🗺️ Journey Planner", "📍 Point Predictor", "📊 Metrics"])
+    tab1, tab2 = st.tabs(["🗺️ Journey Planner", "📍 Point Predictor"])
 
     # --- Tab 1: Journey Planner ---
     with tab1:
         st.header("Plan a Safe Journey")
+        
+        if not user_coords:
+            st.info("⚠️ **Note:** GPS is inactive (requires HTTPS on mobile). 'Current Location' will use approximate IP-based location.")
         
         # Use a Form to prevent page reloads on every character type
         with st.form("journey_planner"):
@@ -122,7 +143,7 @@ def main():
             else:
                 with st.spinner("Calculating Fastest & Safest Route..."):
                     # Store result in session state
-                    st.session_state['route_result'] = analyze_route(origin, dest, model=model, G=G)
+                    st.session_state['route_result'] = analyze_route(origin, dest, model=model, G=G, user_location=user_coords)
 
         # Check if we have a result to display (outside form to persist)
         if 'route_result' in st.session_state:
@@ -174,6 +195,61 @@ def main():
                 st.success("Route Analysis Complete!")
                 st.markdown(f"### [🚀 Open Safe Navigation Route in Google Maps]({result['maps_url']})")
 
+                st_folium(m, width=700, height=500)
+                
+                st.success("Route Analysis Complete!")
+                st.markdown(f"### [🚀 Open Safe Navigation Route in Google Maps]({result['maps_url']})")
+
+                # --- Real-Time GPS Tracker ---
+                st.markdown("---")
+                st.subheader("📡 Real-Time GPS Tracker")
+                
+                # GPS Toggle
+                gps_active = st.checkbox("Enable Live GPS Tracking")
+                
+                if gps_active:
+
+                    
+                    # Manual refresh button instead of auto-refresh loop
+                    if st.button("📍 Refresh My Location"):
+                        st.rerun()
+                        
+                    # Get Coordinates
+                    loc = get_geolocation()
+
+                    if loc:
+                        curr_lat = loc['coords']['latitude']
+                        curr_lon = loc['coords']['longitude']
+                        accuracy = loc['coords']['accuracy']
+                        
+                        st.info(f"📍 **Your Location:** {curr_lat:.5f}, {curr_lon:.5f} (±{accuracy:.1f}m)")
+                        
+                        # 3. Check Proximity to Risks
+                        risk_nearby = False
+                        risk_points = result['top_5_risks']
+                        
+                        for risk in risk_points:
+                            r_lat = risk['lat']
+                            r_lon = risk['lon']
+                            
+                            dist = haversine_distance(curr_lat, curr_lon, r_lat, r_lon)
+                            
+                            # 300m Warning Threshold
+                            if dist < 300:
+                                risk_nearby = True
+                                msg = f"⚠️ **DANGER AHEAD ({int(dist)}m)**\n" \
+                                      f"Risk: `{risk['prob']:.1%}` | Curve: `{risk['features']['curvature_score']:.2f}`"
+                                st.toast(msg, icon="🚨")
+                                st.error(msg)
+                        
+                        if not risk_nearby:
+                            st.success("✅ You are in a Safe Zone.")
+                            
+                    else:
+                        st.error("⚠️ GPS Signal Not Detected.")
+                        st.warning("Please enable Location Services in your browser and system settings, then click 'Refresh My Location'.")
+                        st.markdown("**Note:** GPS access requires **HTTPS** or **localhost**.")
+
     # --- Tab 2: Point Predictor ---
     with tab2:
         st.header("Manual Risk Assessment")
@@ -212,23 +288,7 @@ def main():
             else:
                 st.success("✅ LOW RISK. Safe conditions.")
 
-    # --- Tab 3: Metrics ---
-    with tab3:
-        st.header("Model Performance Metrics")
-        
-        if os.path.exists(METRICS_FILE):
-             with open(METRICS_FILE, "r") as f:
-                metrics_text = f.read()
-                
-             # Parse simple metrics
-             lines = metrics_text.split('\n')
-             cols = st.columns(2)
-             for i, line in enumerate(lines):
-                 if ':' in line:
-                     k, v = line.split(':', 1)
-                     cols[i % 2].metric(k.strip(), v.strip())
-        else:
-            st.info("Metrics file not found. Run evaluation script first.")
+
 
 if __name__ == "__main__":
     main()
