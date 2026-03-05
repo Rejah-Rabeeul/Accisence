@@ -7,7 +7,8 @@ import joblib
 import os
 import networkx as nx
 import osmnx as ox
-from streamlit_js_eval import get_geolocation
+import streamlit.components.v1 as components
+import base64
 from realtime_inference_utils import get_live_weather, get_temporal_features, prepare_live_features
 from risk_aware_navigation import analyze_route, get_coordinates, calculate_curvature, get_maxspeed, haversine_distance
 
@@ -18,6 +19,21 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Streamlit hack to serve static ServiceWorker file precisely at root for scoping
+import streamlit.components.v1 as components
+import base64
+with open("static/sw.js", "r") as f:
+    sw_js = f.read()
+sw_b64 = base64.b64encode(sw_js.encode()).decode()
+
+# Inject the SW payload silently onto the page head so it can be registered from a Blob safely 
+# if static serving from Streamlit is blocked by the proxy
+st.markdown(f"""
+<script>
+    window.SW_CODE_B64 = "{sw_b64}";
+</script>
+""", unsafe_allow_html=True)
 
 MODEL_PATH = "accident_model.pkl"
 METRICS_FILE = "final_scores.txt"
@@ -73,11 +89,102 @@ def main():
         model = load_model()
         G = load_graph()
         
-    # Get User Location (Browser)
-    loc = get_geolocation()
+    # Get User Location (Browser) - Mobile Safe Method via Custom JS
+    st.markdown("### 📍 Location Services (Required)")
+    st.markdown("**Mobile Users:** Tap the button below to allow GPS access. This will prompt your mobile browser securely.")
+    
+    # Custom HTML/JS to trigger native browser prompt and send data back to Streamlit via query params
+    location_html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            .btn {
+                background-color: #FF4B4B;
+                color: white;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 16px;
+                cursor: pointer;
+                width: 100%;
+                font-family: sans-serif;
+            }
+            .btn:hover { background-color: #ff3333; }
+            #status { margin-top: 10px; font-family: sans-serif; font-size: 14px; color: #333; }
+        </style>
+    </head>
+    <body>
+        <button class="btn" onclick="getLocation()">📍 Get My Location</button>
+        <div id="status"></div>
+        <script>
+            function getLocation() {
+                const status = document.getElementById('status');
+                status.textContent = "Locating...";
+                
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(
+                        (position) => {
+                            const lat = position.coords.latitude;
+                            const lon = position.coords.longitude;
+                            const acc = position.coords.accuracy;
+                            status.textContent = "Location found! Sending to app...";
+                            status.style.color = "green";
+                            
+                            // Send data back to Streamlit URL silently
+                            const urlParams = new URLSearchParams(window.parent.location.search);
+                            urlParams.set('lat', lat);
+                            urlParams.set('lon', lon);
+                            urlParams.set('acc', acc);
+                            window.parent.history.replaceState(null, '', '?' + urlParams.toString());
+                            
+                            // Force Streamlit to rerun by simulating a parent window reload without full refresh
+                            window.parent.location.reload(); 
+                        },
+                        (error) => {
+                            let msg = "Error: ";
+                            switch(error.code) {
+                                case error.PERMISSION_DENIED: msg += "Permission Denied. Please enable GPS."; break;
+                                case error.POSITION_UNAVAILABLE: msg += "Position Unavailable."; break;
+                                case error.TIMEOUT: msg += "Request Timeout."; break;
+                                default: msg += "Unknown Error."; break;
+                            }
+                            status.textContent = msg;
+                            status.style.color = "red";
+                        },
+                        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+                    );
+                } else {
+                    status.textContent = "Geolocation is not supported by this browser.";
+                    status.style.color = "red";
+                }
+            }
+        </script>
+    </body>
+    </html>
+    """
+    
+    # Render the JS component
+    components.html(location_html, height=100)
+    
     user_coords = None
-    if loc and 'coords' in loc:
-        user_coords = (loc['coords']['latitude'], loc['coords']['longitude'])
+    
+    # Read from query params
+    params = st.query_params
+    if 'lat' in params and 'lon' in params:
+        try:
+            user_coords = (float(params['lat']), float(params['lon']))
+            loc_acc = float(params.get('acc', 0.0))
+            st.success(f"✅ Location Acquired! ({user_coords[0]:.4f}, {user_coords[1]:.4f})")
+            
+            # Create a mock 'loc' object for the bottom tab to read from
+            loc = {'latitude': user_coords[0], 'longitude': user_coords[1], 'accuracy': loc_acc}
+        except:
+            st.warning("⚠️ Error parsing location. Please try tapping the button again.")
+            loc = None
+    else:
+        st.warning("⚠️ Waiting for location... Please tap the button above to enable GPS.")
+        loc = None
 
     if not model:
         st.error(f"Critical Error: Model file '{MODEL_PATH}' not found. Please train the model first.")
@@ -144,6 +251,8 @@ def main():
                 with st.spinner("Calculating Fastest & Safest Route..."):
                     # Store result in session state
                     st.session_state['route_result'] = analyze_route(origin, dest, model=model, G=G, user_location=user_coords)
+                    
+                    st.success("Route Analyzed Successfully!")
 
         # Check if we have a result to display (outside form to persist)
         if 'route_result' in st.session_state:
@@ -157,8 +266,15 @@ def main():
                 path_len = len(result['route_nodes'])
                 max_prob = result['top_5_risks'][0]['prob'] if result['top_5_risks'] else 0
                 
+                if max_prob > 0.7:
+                    risk_level = "High"
+                elif max_prob > 0.4:
+                    risk_level = "Moderate"
+                else:
+                    risk_level = "Low"
+                    
                 m1.metric("Route Segments", path_len)
-                m2.metric("Max Risk Score", f"{max_prob:.1%}", delta_color="inverse")
+                m2.metric("Max Risk Level", risk_level)
                 m3.metric("High Risk Spots", len(result['top_5_risks']))
                 
                 # Map Visualization
@@ -184,7 +300,7 @@ def main():
                     folium.CircleMarker(
                         location=[risk['lat'], risk['lon']],
                         radius=8,
-                        popup=f"Risk: {risk['prob']:.1%}<br>Curvature: {risk['features']['curvature_score']:.2f}",
+                        popup=f"Risk Level: {'High' if risk['prob']>0.7 else 'Moderate' if risk['prob']>0.4 else 'Low'}<br>Curvature: {risk['features']['curvature_score']:.2f}",
                         color="red",
                         fill=True,
                         fill_color="red"
@@ -192,13 +308,99 @@ def main():
                 
                 st_folium(m, width=700, height=500)
                 
-                st.success("Route Analysis Complete!")
-                st.markdown(f"### [🚀 Open Safe Navigation Route in Google Maps]({result['maps_url']})")
+                # Native Fallback (In case JS blocks it)
+                if 'top_5_risks' in result and result['top_5_risks']:
+                    risk_spots_text = "\\n".join([
+                        f"{i+1}. {r.get('name', 'Unknown Road')} (Risk: {'High' if r['prob']>0.7 else 'Mod' if r['prob']>0.4 else 'Low'})"
+                        for i, r in enumerate(result['top_5_risks'])
+                    ])
+                    st.info(f"**🚨 Top 5 Accident Spots on Your Route:**\\n\\n{risk_spots_text.replace('\\n', '  \\n')}")
+                else:
+                    risk_spots_text = "No severe risks found on this route."
 
-                st_folium(m, width=700, height=500)
-                
                 st.success("Route Analysis Complete!")
                 st.markdown(f"### [🚀 Open Safe Navigation Route in Google Maps]({result['maps_url']})")
+                
+                # Render Web Push Notification Button
+                risk_spots_encoded = risk_spots_text.replace('\\n', '\\\\n')
+                notification_html = f"""
+                <div style="font-family: sans-serif; text-align: center; margin-top: 5px;">
+                    <button id="notifyBtn" style="background:#FF4B4B; color:white; border:none; padding:8px 15px; border-radius:5px; cursor:pointer; font-weight:bold;">
+                        🔔 Show Top 5 Accident Spots Alert
+                    </button>
+                </div>
+                <script>
+                    document.getElementById('notifyBtn').addEventListener('click', async function() {{
+                        const title = "🚨 Top 5 Accident Spots on Your Route:";
+                        const options = {{
+                            body: "{risk_spots_encoded}",
+                            icon: "https://unpkg.com/lucide-static@0.263.1/icons/alert-triangle.svg",
+                            requireInteraction: true
+                        }};
+
+                        try {{
+                            if (!("Notification" in window) || !("serviceWorker" in navigator)) {{
+                                alert("This browser lacks necessary support for native notifications.\\n\\n" + title + "\\n" + options.body);
+                                return;
+                            }}
+
+                            let perm = Notification.permission;
+                            if (perm !== "granted" && perm !== "denied") {{
+                                perm = await Notification.requestPermission();
+                            }}
+
+                            if (perm === "granted") {{
+                                // Try registering the Service Worker via the injected b64 payload 
+                                // Streamlit makes hosting vanilla JS files at the exact root scope extremely difficult,
+                                // so we decode it on the client and serve it via Blob, but more robustly this time.
+                                
+                                let swUrl;
+                                try {{
+                                    if (window.parent.window.SW_CODE_B64) {{
+                                        const swCode = atob(window.parent.window.SW_CODE_B64);
+                                        const blob = new Blob([swCode], {{type: 'application/javascript'}});
+                                        swUrl = URL.createObjectURL(blob);
+                                    }} else {{
+                                        // Fallback minimal SW
+                                        const swCode = "self.addEventListener('install', e => self.skipWaiting()); self.addEventListener('activate', e => event.waitUntil(clients.claim()));";
+                                        const blob = new Blob([swCode], {{type: 'application/javascript'}});
+                                        swUrl = URL.createObjectURL(blob);
+                                    }}
+                                }} catch(e) {{
+                                    const swCode = "self.addEventListener('install', e => self.skipWaiting()); self.addEventListener('activate', e => event.waitUntil(clients.claim()));";
+                                    const blob = new Blob([swCode], {{type: 'application/javascript'}});
+                                    swUrl = URL.createObjectURL(blob);
+                                }}
+
+                                navigator.serviceWorker.register(swUrl).then(function(reg) {{
+                                    return navigator.serviceWorker.ready;
+                                }}).then(function(reg) {{
+                                    if (reg) {{
+                                        reg.showNotification(title, options);
+                                        document.getElementById('notifyBtn').innerText = "🔔 Alert Sent to Device!";
+                                    }} else {{
+                                        alert(title + "\\n" + options.body);
+                                    }}
+                                }}).catch(function(err) {{
+                                    console.error('SW Error:', err);
+                                    // Fallback to old Notification object if SW fails
+                                    try {{
+                                        new Notification(title, options);
+                                    }} catch(e) {{
+                                        alert(title + "\\n" + options.body);
+                                    }}
+                                }});
+                            }} else {{
+                                alert("Permissions blocked. Manual Alert:\\n\\n" + title + "\\n" + options.body);
+                            }}
+                        }} catch (e) {{
+                            console.error("Push Error:", e);
+                            alert("Notification Error.\\n\\n" + title + "\\n" + options.body);
+                        }}
+                    }});
+                </script>
+                """
+                components.html(notification_html, height=60)
 
                 # --- Real-Time GPS Tracker ---
                 st.markdown("---")
@@ -210,17 +412,14 @@ def main():
                 if gps_active:
 
                     
-                    # Manual refresh button instead of auto-refresh loop
-                    if st.button("📍 Refresh My Location"):
-                        st.rerun()
+                    # Instructions for mobile updates
+                    st.info("💡 **Tip:** To update your live position as you move, tap the 'Get Location' button at the **very top of the main page** again.")
                         
-                    # Get Coordinates
-                    loc = get_geolocation()
-
-                    if loc:
-                        curr_lat = loc['coords']['latitude']
-                        curr_lon = loc['coords']['longitude']
-                        accuracy = loc['coords']['accuracy']
+                    # Check if we have coordinates from the global top-level widget
+                    if user_coords:
+                        curr_lat = user_coords[0]
+                        curr_lon = user_coords[1]
+                        accuracy = loc.get('accuracy', 0.0) if loc and loc.get('accuracy') is not None else 0.0
                         
                         st.info(f"📍 **Your Location:** {curr_lat:.5f}, {curr_lon:.5f} (±{accuracy:.1f}m)")
                         
@@ -237,8 +436,9 @@ def main():
                             # 300m Warning Threshold
                             if dist < 300:
                                 risk_nearby = True
+                                risk_level_str = 'High' if risk['prob']>0.7 else 'Moderate' if risk['prob']>0.4 else 'Low'
                                 msg = f"⚠️ **DANGER AHEAD ({int(dist)}m)**\n" \
-                                      f"Risk: `{risk['prob']:.1%}` | Curve: `{risk['features']['curvature_score']:.2f}`"
+                                      f"Risk Level: `{risk_level_str}` | Curve: `{risk['features']['curvature_score']:.2f}`"
                                 st.toast(msg, icon="🚨")
                                 st.error(msg)
                         
@@ -279,7 +479,8 @@ def main():
             df_in = prepare_live_features(feat, p_weather, time_d)
             prob = model.predict_proba(df_in)[0][1]
             
-            st.metric("Accident Probability", f"{prob:.2%}")
+            risk_level = "High" if prob > 0.7 else "Moderate" if prob > 0.4 else "Low"
+            st.metric("Accident Risk Level", risk_level)
             
             if prob > 0.7:
                 st.error("⚠️ HIGH RISK! Drive with extreme caution.")

@@ -173,7 +173,7 @@ def analyze_route(origin_input, dest_input, model=None, G=None, user_location=No
     dest_node = ox.distance.nearest_nodes(G, dest_lon, dest_lat)
     
     try:
-        route = nx.shortest_path(G, orig_node, dest_node, weight='travel_time')
+        route = nx.shortest_path(G, orig_node, dest_node, weight='length')
     except nx.NetworkXNoPath:
         return {"error": "No route found."}
 
@@ -202,13 +202,18 @@ def analyze_route(origin_input, dest_input, model=None, G=None, user_location=No
             input_df = prepare_live_features(features, weather, time_ctx)
             prob = model.predict_proba(input_df)[0][1]
             
+            name = edge_data.get('name', 'Unknown Road')
+            if isinstance(name, list):
+                name = name[0]
+            
             node_data_v = G.nodes[v]
             segment_risks.append({
                 'lat': node_data_v['y'],
                 'lon': node_data_v['x'],
                 'prob': prob,
                 'features': features,
-                'order': i
+                'order': i,
+                'name': name
             })
 
     # Top 5 Risks
@@ -222,7 +227,7 @@ def analyze_route(origin_input, dest_input, model=None, G=None, user_location=No
     url_origin = f"{orig_lat},{orig_lon}"
     url_dest = f"{dest_lat},{dest_lon}"
     waypoints = [f"{risk['lat']},{risk['lon']}" for risk in top_5]
-    wp_str = "|".join(waypoints)
+    wp_str = "%7C".join(waypoints)
     maps_url = f"https://www.google.com/maps/dir/?api=1&origin={url_origin}&destination={url_dest}&waypoints={wp_str}"
     
     return {
@@ -289,7 +294,8 @@ def main():
     print("="*40)
     
     for i, risk in enumerate(result['top_5_risks']):
-        print(f"{i+1}. Risk: {risk['prob']:.1%} | Curv: {risk['features']['curvature_score']:.2f}")
+        risk_level = 'High' if risk['prob']>0.7 else 'Moderate' if risk['prob']>0.4 else 'Low'
+        print(f"{i+1}. Risk Level: {risk_level} | Curv: {risk['features']['curvature_score']:.2f}")
         
     print("\n" + "="*40)
     print("NAVIGATION LINK (Safe Route)")
