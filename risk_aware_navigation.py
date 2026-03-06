@@ -122,8 +122,12 @@ def analyze_route(origin_input, dest_input, model=None, G=None, user_location=No
             return {"error": "Model not found."}
 
     # 1. Resolve Coordinates
-    if not origin_input and user_location:
-         # Use provided browser coordinates directly
+    # First, normalize the origin input to catch variations of "current location" safely
+    norm_origin = str(origin_input).strip().lower() if origin_input else ""
+    
+    # If they passed accurate GPS coordinates and didn't type a specific city name, USE IT.
+    if (not norm_origin or norm_origin in ["current location", "here", "me"]) and user_location is not None:
+         print(f"   Using high-accuracy browser GPS: {user_location}")
          orig_lat, orig_lon = user_location
          # Use destination resolution as usual
          dest_coords = get_coordinates(dest_input)
@@ -221,7 +225,19 @@ def analyze_route(origin_input, dest_input, model=None, G=None, user_location=No
     top_5 = segment_risks[:5]
     top_5.sort(key=lambda x: x['order'])
     
-    # URL Construction
+    # Overall Route Risk
+    if segment_risks:
+        avg_prob = sum(r['prob'] for r in segment_risks) / len(segment_risks)
+        if avg_prob > 0.6:
+            overall_risk = "High"
+        elif avg_prob > 0.3:
+            overall_risk = "Medium"
+        else:
+            overall_risk = "Low"
+    else:
+        overall_risk = "Unknown"
+        avg_prob = 0.0
+
     # URL Construction
     # Use resolved coordinates for Origin to match analysis exactly
     url_origin = f"{orig_lat},{orig_lon}"
@@ -234,6 +250,8 @@ def analyze_route(origin_input, dest_input, model=None, G=None, user_location=No
         "route_nodes": route,
         "route_coords": route_coords,
         "top_5_risks": top_5,
+        "overall_risk": overall_risk,
+        "avg_risk_prob": float(avg_prob),
         "maps_url": maps_url,
         "weather": weather,
         "time_ctx": time_ctx,
