@@ -28,16 +28,91 @@ def calculate_curvature(geom):
     if euclidean == 0: return 1.0
     return length / euclidean
 
-def get_maxspeed(speed_val):
-    """Parses maxspeed tag to float."""
+def get_maxspeed(edge_data):
+    """Parses maxspeed tag to float with fallback based on highway type."""
+    speed_val = edge_data.get('maxspeed')
+    
     if isinstance(speed_val, list):
         speed_val = speed_val[0]
     
     try:
-        if pd.isna(speed_val): return 40.0
-        return float(str(speed_val).split()[0])
+        if not pd.isna(speed_val):
+            return float(str(speed_val).split()[0])
     except:
-        return 40.0
+        pass
+        
+    highway = edge_data.get('highway', 'road')
+    if isinstance(highway, list):
+        highway = highway[0]
+        
+    highway = str(highway).lower()
+    
+    # Realistic speeds in town areas
+    speed_map = {
+        'motorway': 80.0,
+        'trunk': 60.0,
+        'primary': 50.0,
+        'secondary': 40.0,
+        'tertiary': 35.0,
+        'unclassified': 30.0,
+        'residential': 20.0,
+        'living_street': 15.0,
+        'service': 15.0,
+        'pedestrian': 10.0,
+        'track': 15.0,
+        'path': 10.0
+    }
+    
+    return speed_map.get(highway, 30.0)
+
+def get_road_name(edge_data):
+    """
+    Provides a descriptive name for a road segment using various tags.
+    Order of preference: name -> ref -> highway
+    """
+    # 1. Try Name
+    name = edge_data.get('name')
+    if name:
+        if isinstance(name, list):
+            name = name[0]
+        return str(name)
+    
+    # 2. Try Ref (e.g., NH-66)
+    ref = edge_data.get('ref')
+    if ref:
+        if isinstance(ref, list):
+            ref = ref[0]
+        return f"Road {ref}"
+    
+    # 3. Fallback to Highway type
+    hway = edge_data.get('highway', 'road')
+    if isinstance(hway, list):
+        hway = hway[0]
+    
+    hway_str = str(hway).lower()
+    osm_map = {
+        'unclassified': 'Minor Road',
+        'residential': 'Residential Street',
+        'tertiary': 'Local Road',
+        'secondary': 'Connecting Road',
+        'primary': 'Main Road',
+        'trunk': 'Highway',
+        'living_street': 'Shared Street',
+        'pedestrian': 'Pedestrian Zone',
+        'track': 'Local Track',
+        'path': 'Path'
+    }
+    
+    if hway_str in osm_map:
+        return osm_map[hway_str]
+    
+    # Beautify unknown highway types
+    hway = hway_str.replace('_', ' ').capitalize()
+    if not hway.lower().endswith('road') and not hway.lower().endswith('way'):
+        hway = f"{hway} Road"
+        
+    return hway
+
 
 def get_current_location():
     """
@@ -145,6 +220,11 @@ def analyze_route(origin_input, dest_input, model=None, G=None, user_location=No
         orig_lat, orig_lon = orig_coords
         dest_lat, dest_lon = dest_coords
 
+    # Region Validation (Exact Graph Bounds for 'Kozhikode, Kerala, India')
+    # minLat: 11.125, maxLat: 11.805, minLon: 75.535, maxLon: 76.120
+    if not (11.125 <= dest_lat <= 11.805 and 75.535 <= dest_lon <= 76.120):
+        return {"error": "Destination is outside the supported Kozhikode region. Please select a local destination."}
+
     # 2. Get Graph
     if G is None:
         try:
@@ -163,7 +243,7 @@ def analyze_route(origin_input, dest_input, model=None, G=None, user_location=No
                 data['curvature_score'] = calculate_curvature(data['geometry'])
             else:
                 data['curvature_score'] = 1.0
-            data['maxspeed_clean'] = get_maxspeed(data.get('maxspeed', 40))
+            data['maxspeed_clean'] = get_maxspeed(data)
             is_junc = 1 if (node_degrees[u] > 2 or node_degrees[v] > 2) else 0
             data['is_junction'] = is_junc
             
@@ -206,9 +286,7 @@ def analyze_route(origin_input, dest_input, model=None, G=None, user_location=No
             input_df = prepare_live_features(features, weather, time_ctx)
             prob = model.predict_proba(input_df)[0][1]
             
-            name = edge_data.get('name', 'Unknown Road')
-            if isinstance(name, list):
-                name = name[0]
+            name = get_road_name(edge_data)
             
             node_data_v = G.nodes[v]
             segment_risks.append({
