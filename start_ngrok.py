@@ -43,8 +43,6 @@ def start_ngrok():
                 print("\n" + "="*50)
                 print(f"YOUR NEW RELIABLE LINK IS -> {url}")
                 print("=====================================================")
-                with open('tunnel_link.txt', 'w') as f:
-                    f.write(url)
                 break
             
             if "heartbeat timeout" in line or "context deadline exceeded" in line:
