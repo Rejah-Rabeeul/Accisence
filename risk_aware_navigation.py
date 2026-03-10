@@ -1,5 +1,5 @@
-import osmnx as ox
 import networkx as nx
+from csv_graph_loader import load_graph_from_csv, nearest_nodes
 import pandas as pd
 import numpy as np
 import shapely.geometry
@@ -147,9 +147,16 @@ def get_coordinates(place_name):
         
     print(f"   Geocoding '{place_name}'...")
     try:
-        # Use OSmnx's geocoder (Nominatim)
-        lat, lon = ox.geocode(place_name)
-        return lat, lon
+        # Use an explicit web request to Nominatim instead of OSMnx to save memory
+        headers = {'User-Agent': 'RiskAwareNavigation/1.0'}
+        url = f"https://nominatim.openstreetmap.org/search?q={place_name}&format=json&limit=1"
+        res = requests.get(url, headers=headers).json()
+        if res:
+            lat = float(res[0]['lat'])
+            lon = float(res[0]['lon'])
+            return lat, lon
+        else:
+            return None
     except Exception as e:
         print(f"   Error finding '{place_name}': {e}")
         return None
@@ -229,9 +236,9 @@ def analyze_route(origin_input, dest_input, model=None, G=None, user_location=No
     if G is None:
         try:
             # optimize: cache this in the calling app
-            G = ox.graph_from_place('Kozhikode, Kerala, India', network_type='drive')
+            G = load_graph_from_csv("kozhikode_roads.csv")
         except Exception as e:
-            return {"error": f"Graph download failed: {e}"}
+            return {"error": f"Graph load failed: {e}"}
 
     # 3. Enrich Graph (if not already enriched)
     # Check if a random edge has 'curvature_score' to see if enriched
@@ -253,8 +260,8 @@ def analyze_route(origin_input, dest_input, model=None, G=None, user_location=No
             data['travel_time'] = length_m / speed_mps
 
     # 4. Find Path
-    orig_node = ox.distance.nearest_nodes(G, orig_lon, orig_lat)
-    dest_node = ox.distance.nearest_nodes(G, dest_lon, dest_lat)
+    orig_node = nearest_nodes(G, (orig_lon, orig_lat))
+    dest_node = nearest_nodes(G, (dest_lon, dest_lat))
     
     try:
         route = nx.shortest_path(G, orig_node, dest_node, weight='length')

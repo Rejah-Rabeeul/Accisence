@@ -2,9 +2,9 @@ from flask import Flask, render_template, request, jsonify, send_from_directory
 import os
 import joblib
 import networkx as nx
-import osmnx as ox
 from risk_aware_navigation import analyze_route, get_coordinates
 from realtime_inference_utils import get_live_weather, get_temporal_features
+from csv_graph_loader import load_graph_from_csv
 
 app = Flask(__name__)
 
@@ -17,7 +17,6 @@ def after_request(response):
     return response
 
 MODEL_PATH = "accident_model.pkl"
-GRAPH_PATH = "kozhikode_graph.graphml" # Hypothetical cache for faster loading
 
 # --- Global Resources ---
 model = None
@@ -28,13 +27,11 @@ def load_resources():
     if os.path.exists(MODEL_PATH):
         model = joblib.load(MODEL_PATH)
     
-    # Load or download graph
     try:
-        # For production, we'd use a local file, but for now we'll use the ox method
-        # or load from a pre-saved graphml if it exists to be fast.
-        G = ox.graph_from_place('Kozhikode, Kerala, India', network_type='drive')
+        # Load directly from our 26MB CSV rather than Heavy OSMnx
+        G = load_graph_from_csv("kozhikode_roads.csv")
     except Exception as e:
-        print(f"Error loading graph: {e}")
+        print(f"Error loading lightweight graph: {e}")
 
 @app.route('/')
 def index():
