@@ -81,4 +81,4 @@ if __name__ == '__main__':
     # Debug = False is critical here. Flask's Werkzeug debugger violently rejects
     # external Host headers when proxying through services like Pinggy or Ngrok 
     # as a security measure against DNS rebinding. 
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)), debug=False)
